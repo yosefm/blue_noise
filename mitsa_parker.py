@@ -15,7 +15,7 @@ Created on Mon Mar 30 11:19:33 2020
 """
 
 import numpy as np
-from scipy import signal as sg
+from scipy import ndimage as ndi
 from matplotlib import pyplot as pl
 
 def desired_PSD_nd(grey_level, side_length, num_dims=2):
@@ -114,14 +114,14 @@ def correct_signal(signal, desired_PSD):
     Returns:
     2-d array, same shape as `signal`.
     """
-    sig_spect = np.fft.fftshift(np.fft.fft2(signal))
+    sig_spect = np.fft.fftshift(np.fft.fftn(signal))
     sig_PSD_ra = radially_average(sig_spect*sig_spect.conj())
     
     ratio = np.sqrt(desired_PSD/sig_PSD_ra)
     ratio_filt = radially_distribute(ratio, signal.shape)
     
     corrected_spect = sig_spect*ratio_filt
-    corrected_sig = np.real(np.fft.ifft2(np.fft.ifftshift(corrected_spect)))
+    corrected_sig = np.real(np.fft.ifftn(np.fft.ifftshift(corrected_spect)))
     # The imaginary part should be ~zero, np.real() just squeezes it out.
     
 #    # diagnostics:
@@ -146,7 +146,7 @@ def iterate_signal(signal, desired):
     corrected_sig = correct_signal(signal, desired)
     
     # Do some replacements:
-    num_replacements = signal.shape[0]
+    num_replacements = signal.shape[0] # assumes square/cube array. revisit later.
     error = np.abs(corrected_sig - signal)
     
     # Identify worst pairs.
@@ -165,11 +165,12 @@ def iterate_signal(signal, desired):
     return new_sig, mse
     
 
-def initial_binary_mask(grey_level, side_length):
+def initial_binary_mask(grey_level, side_length, num_dims=2):
     """
     Prepares an initial binary mask for the ACBNOM, using the BIPPSMA stage. [1]
+    Note some magic numbers related to the iteration control. Revisit later.
     """
-    num_samples = side_length**2
+    num_samples = side_length**num_dims
     
     # white noise:
     # Instead of thresholding a uniform distribution, I make sure the number
@@ -178,11 +179,11 @@ def initial_binary_mask(grey_level, side_length):
     signal = np.zeros(num_samples)
     num_on = int(num_samples*grey_level)
     signal[perm[:num_on]] = 1
-    signal = signal.reshape(side_length, side_length)
+    signal = signal.reshape((side_length,)*num_dims)
     
     # Generate the radial PSD that is the target function for iteration.
     actual_grey_level = signal.mean()
-    desired = desired_PSD_nd(actual_grey_level, side_length)
+    desired = desired_PSD_nd(actual_grey_level, side_length, num_dims)
     desired_radial = radially_average(desired)
     
     new_sig = np.zeros_like(signal)
@@ -217,9 +218,11 @@ def iterate_grey_level(prev_mask, new_g_disc, num_grey_levels=256, upward=True):
     upward - direction of construction. Affects the kind of replacements made.
     """
     gl_delta = 1./num_grey_levels
+    grey_level = new_g_disc/(num_grey_levels - 1)
     
     # Create desired spectrum.
-    desired = desired_PSD_nd(new_g_disc*gl_delta, prev_mask.shape[0])
+    desired = desired_PSD_nd(
+        new_g_disc*gl_delta, prev_mask.shape[0], prev_mask.ndim)
     desired_radial = radially_average(desired)
     
     # Find error:
@@ -231,24 +234,12 @@ def iterate_grey_level(prev_mask, new_g_disc, num_grey_levels=256, upward=True):
     
     ## Identify worst zeros. This is different than BIPPSMA, because we 
     ## have to check each replacement's neighbourhood to avoid clusters.
-    
-    # The crowding check decreases in severity as the grey-level gets more 
-    # crowded itself. the current scheme should be improved to not hard-code
-    # grey levels.
-    if (90 < grey_level_disc < 165):
-        crowding_fact = 1.2
-    elif (50 < grey_level_disc < 200):
-        crowding_fact = 1.5
-    else:
-        crowding_fact = 1.95
-        
     if upward:
         replace_value = 0
         replace_to = 1
     else:
         replace_value = 1
         replace_to = 0
-        crowding_fact = 2 - crowding_fact
     
     void = prev_mask == replace_value
     void_error = np.where(void, error, 0)
@@ -263,43 +254,42 @@ def iterate_grey_level(prev_mask, new_g_disc, num_grey_levels=256, upward=True):
     # doing it individually per point in pure Python.
     half_window = 4
     window_size = (2*half_window + 1)
-    window = np.full((window_size, window_size), 1/window_size**2)
-    local_mean = sg.convolve2d(prev_mask, window, mode='same', boundary='wrap')
+    window = np.full((window_size,)*prev_mask.ndim, 1/window_size**prev_mask.ndim)
+    local_mean = ndi.convolve(prev_mask, window, mode='wrap')
     
-    for row, col in zip(*error_coords):
+    for coords in zip(*error_coords):
         if upward:
-            crowded = local_mean[row, col] > crowding_fact*grey_level
+            crowded = local_mean[coords] > grey_level
         else:
-            crowded = local_mean[row, col] < crowding_fact*grey_level
+            crowded = local_mean[coords] < grey_level
             
         if crowded:
             continue
         
-        assert(new_sig[row, col]  == replace_value)
-        new_sig[row, col] = replace_to
+        assert(new_sig[coords] == replace_value)
+        new_sig[coords] = replace_to
         num_replacements -= 1
         if num_replacements == 0:
             break
     
-    print(num_replacements)
     # Profit:
     return new_sig
 
-if __name__ == "__main__":
-    side_length = 256
-    
+def gen_blue_noise(side_length, num_dims=2):
+    """
+    Create an array whose pixels are numbered 0..array size. Thresholding the
+    array at any level gives a binary mask that is distributed as blue noise 
+    with density matching the threshold grey level. Algorithm: [1].
+    """
     grey_level = 0.5
     num_grey_bits = 8
     num_grey_levels = 2**num_grey_bits
     
     init_mask, desired_radial = initial_binary_mask(grey_level, side_length)
     
-    pl.figure()
-    pl.imshow(init_mask)
-    
     # The cumulative array:
     numbered_pixels = np.where(init_mask, (num_grey_levels >> 1) - 1, num_grey_levels >> 1)
-    
+         
     next_mask = init_mask.copy()
     for grey_level_disc in range((num_grey_levels >> 1) + 1, num_grey_levels):
         print(grey_level_disc)
@@ -312,6 +302,13 @@ if __name__ == "__main__":
         next_mask = iterate_grey_level(next_mask, grey_level_disc, upward=False)
         numbered_pixels[next_mask != 0] -= 1
    
+    return numbered_pixels
+    
+
+if __name__ == "__main__":
+    side_length = 256
+    numbered_pixels = gen_blue_noise(side_length)
+    
     # Examine result:
     pl.figure()
     pl.imshow(numbered_pixels)
@@ -322,21 +319,14 @@ if __name__ == "__main__":
     next_PSD = next_FT*next_FT.conj()
     pl.plot(radially_average(next_PSD)[1:])
     
-    """
+    #"""
     # A few slices, self check:
-    bin_mask_last = np.zeros(init_mask.shape, dtype=np.bool)
     for slice_num in [10, 50, 128, 170, 200, 255]:
         bin_mask = numbered_pixels <= slice_num
         pl.figure()
         pl.imshow(bin_mask)
         pl.title("Slice %d" % slice_num)
-        
-        pl.figure()
-        pl.imshow(bin_mask ^ bin_mask_last)
-        pl.title("Slice %d diff" % slice_num)
-        
-        bin_mask_last = bin_mask
-    """
+    #"""
     
     pl.show()
     
