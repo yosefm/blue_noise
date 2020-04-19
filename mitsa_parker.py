@@ -64,14 +64,25 @@ def desired_PSD_nd(grey_level, side_length, num_dims=2):
 
 class DimentionalConverter:
     """
-    Converts 2D array <---> radially averaged 1D array.
+    Converts nD array <---> radially averaged 1D array.
     """
-    def __init__(self, shape):
+    def __init__(self, shape, squeeze_factors=None):
+        """
+        shape - of the nD side of the conversion. A tuple.
+        squeeze_factors - n-length array. Change the calculation of radius
+            to be ellipsoidal, r = sum(coord_i**2/squeeze_factor_i**2)
+        """
+        if squeeze_factors is None:
+            squeeze_factors = np.ones(len(shape))
+        
+        # Make squeeze-factors broadcastable to coords array shape:
+        squeeze_factors_shape = (len(squeeze_factors),) + (1,)*len(shape)
+        squeeze_factors = squeeze_factors.reshape(*squeeze_factors_shape)
+        
+        coords = np.mgrid[[np.s_[-sz//2 : sz//2] for sz in shape]]
+        r = np.linalg.norm(coords / squeeze_factors, axis=0)
+        
         num_bins = int(np.ceil(np.linalg.norm(shape)/2))
-        r = np.linalg.norm(
-            np.mgrid[[np.s_[-sz//2 : sz//2] for sz in shape]],
-            axis=0
-        )
         annuli = np.digitize(r, bins=np.arange(1, num_bins + 1))
         self._annulus_masks = [annuli == bin_ix for bin_ix in range(num_bins)]
         
@@ -284,7 +295,7 @@ def iterate_grey_level(prev_mask, new_g_disc, converter,
     # Profit:
     return new_sig
 
-def gen_blue_noise(side_length, num_dims=2):
+def gen_blue_noise(side_length, num_dims=2, squeeze_factors=None):
     """
     Create an array whose pixels are numbered 0..array size. Thresholding the
     array at any level gives a binary mask that is distributed as blue noise 
@@ -294,7 +305,7 @@ def gen_blue_noise(side_length, num_dims=2):
     num_grey_bits = 8
     num_grey_levels = 2**num_grey_bits
     
-    converter = DimentionalConverter((side_length,)*num_dims)
+    converter = DimentionalConverter((side_length,)*num_dims, squeeze_factors)
     init_mask, desired_radial = initial_binary_mask(
         grey_level, side_length, converter, num_dims)
     
@@ -323,12 +334,20 @@ if __name__ == "__main__":
         help="The generated mask will be an n-d cube with this side length.")
     parser.add_argument('--dims', type=int, default=2,
         help="Dimentions of output mask. Default is 2 (square).")
+    parser.add_argument('--squeeze-factors', 
+        help="Coma-separated, one element per dimension."
+        "See docstrings in DigitalConverter class.")
+    
     parser.add_argument('--view', action='store_true',
         help="Show some graphs of the output BN mask. Some are 2D only.")
     parser.add_argument('--output', default="bn_mask")
     args = parser.parse_args()
     
-    numbered_pixels = gen_blue_noise(args.side_length, args.dims)
+    sfacts = args.squeeze_factors
+    if sfacts is not None:
+        sfacts = np.r_[[float(f) for f in sfacts.split(',')]]
+        
+    numbered_pixels = gen_blue_noise(args.side_length, args.dims, sfacts)
     np.save(args.output, numbered_pixels)
     
     # Examine result:
