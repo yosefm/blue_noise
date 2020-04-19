@@ -146,7 +146,7 @@ def iterate_signal(signal, desired):
     corrected_sig = correct_signal(signal, desired)
     
     # Do some replacements:
-    num_replacements = signal.shape[0] # assumes square/cube array. revisit later.
+    num_replacements = int(np.sqrt(np.multiply.reduce(signal.shape)))
     error = np.abs(corrected_sig - signal)
     
     # Identify worst pairs.
@@ -191,6 +191,7 @@ def initial_binary_mask(grey_level, side_length, num_dims=2):
     mse = 1000000000
     i = 0
     while i < 100 and not np.isnan(mse):
+        print("init mask", i)
         new_sig, new_mse = iterate_signal(new_sig_last, desired_radial)
         #print(i, new_mse)
         if (new_mse > mse and i > 10):
@@ -285,7 +286,7 @@ def gen_blue_noise(side_length, num_dims=2):
     num_grey_bits = 8
     num_grey_levels = 2**num_grey_bits
     
-    init_mask, desired_radial = initial_binary_mask(grey_level, side_length)
+    init_mask, desired_radial = initial_binary_mask(grey_level, side_length, num_dims)
     
     # The cumulative array:
     numbered_pixels = np.where(init_mask, (num_grey_levels >> 1) - 1, num_grey_levels >> 1)
@@ -306,27 +307,38 @@ def gen_blue_noise(side_length, num_dims=2):
     
 
 if __name__ == "__main__":
-    side_length = 256
-    numbered_pixels = gen_blue_noise(side_length)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--side-length', type=int, default=256,
+        help="The generated mask will be an n-d cube with this side length.")
+    parser.add_argument('--dims', type=int, default=2,
+        help="Dimentions of output mask. Default is 2 (square).")
+    parser.add_argument('--view', action='store_true',
+        help="Show some graphs of the output BN mask. Some are 2D only.")
+    parser.add_argument('--output', default="bn_mask")
+    args = parser.parse_args()
+    
+    numbered_pixels = gen_blue_noise(args.side_length, args.dims)
+    np.save(args.output, numbered_pixels)
     
     # Examine result:
-    pl.figure()
-    pl.imshow(numbered_pixels)
-    pl.colorbar()
-    
-    pl.figure()
-    next_FT = np.fft.fftshift(np.fft.fft2(numbered_pixels))
-    next_PSD = next_FT*next_FT.conj()
-    pl.plot(radially_average(next_PSD)[1:])
-    
-    #"""
-    # A few slices, self check:
-    for slice_num in [10, 50, 128, 170, 200, 255]:
-        bin_mask = numbered_pixels <= slice_num
+    if args.view:
         pl.figure()
-        pl.imshow(bin_mask)
-        pl.title("Slice %d" % slice_num)
-    #"""
+        next_FT = np.fft.fftshift(np.fft.fft2(numbered_pixels))
+        next_PSD = next_FT*next_FT.conj()
+        pl.plot(radially_average(next_PSD)[1:])
+        
+        if args.dims == 2:
+            pl.figure()
+            pl.imshow(numbered_pixels)
+            pl.colorbar()
+            
+            # A few slices, self check:
+            for slice_num in [10, 50, 128, 170, 200, 255]:
+                bin_mask = numbered_pixels <= slice_num
+                pl.figure()
+                pl.imshow(bin_mask)
+                pl.title("Slice %d" % slice_num)
     
-    pl.show()
+        pl.show()
     
