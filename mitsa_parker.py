@@ -1,7 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Create a blue-noise mask using the Mitsa-Parker method.
+Create a blue-noise mask using the Mitsa-Parker [1] method.
+
+How to run:
+    
+    python3 mitsa_parker.py --help
+    
+Real example: to create a 2D mask of side 256, and view the results, run
+    
+  python3 mitsa_parker.py --view
+  
+(no need to give arguments because those are the defaults.)
+
 
 References:
 [1] Mitsa, T. and Parker, K.J. (1992). Digital halftoning technique using a
@@ -329,18 +340,26 @@ def gen_blue_noise(side_length, num_dims=2, squeeze_factors=None):
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser()
+    
+    usage = """
+    This program generates a blue-noise mask of a given block size. See options
+    below for how to specify it. The block is saved as an NPY file for later
+    processing. The --view option gives some visual summary, but you should
+    do your own analysis.
+    """
+    parser = argparse.ArgumentParser(usage=usage)
     parser.add_argument('--side-length', type=int, default=256,
         help="The generated mask will be an n-d cube with this side length.")
     parser.add_argument('--dims', type=int, default=2,
         help="Dimentions of output mask. Default is 2 (square).")
     parser.add_argument('--squeeze-factors', 
-        help="Coma-separated, one element per dimension."
+        help="Coma-separated, one element per dimension. "
         "See docstrings in DigitalConverter class.")
     
     parser.add_argument('--view', action='store_true',
         help="Show some graphs of the output BN mask. Some are 2D only.")
-    parser.add_argument('--output', default="bn_mask")
+    parser.add_argument('--output', default="bn_mask",
+        help="File name for the generated .npy file.")
     args = parser.parse_args()
     
     sfacts = args.squeeze_factors
@@ -369,7 +388,7 @@ if __name__ == "__main__":
                 bin_mask = numbered_pixels <= slice_num
                 pl.figure()
                 pl.imshow(bin_mask)
-                pl.title("Slice %d" % slice_num)
+                pl.title("Grey level %d/%d" % (slice_num + 1, 256))
     
         pl.show()
     
