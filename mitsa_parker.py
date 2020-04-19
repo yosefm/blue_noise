@@ -62,45 +62,49 @@ def desired_PSD_nd(grey_level, side_length, num_dims=2):
     return flt
 
 
-def radially_average(spectrum):
+class DimentionalConverter:
     """
-    Turn an n-d array into a 1-d array where each cell is the average of all 
-    input cells at a radial bin. Radius is measured from array center.
+    Converts 2D array <---> radially averaged 1D array.
     """
-    num_bins = int(np.ceil(np.linalg.norm(spectrum.shape)/2))
-    ret = np.empty(num_bins)
-    r = np.linalg.norm(
-        np.mgrid[[np.s_[-sz//2 : sz//2] for sz in spectrum.shape]],
-        axis=0
-    )
-    
-    for bin_ix in range(num_bins):
-        annulus = spectrum[(r >= bin_ix) & (r < bin_ix + 1)]
-        ret[bin_ix] = annulus.sum() / len(annulus)
-    
-    return ret
+    def __init__(self, shape):
+        num_bins = int(np.ceil(np.linalg.norm(shape)/2))
+        r = np.linalg.norm(
+            np.mgrid[[np.s_[-sz//2 : sz//2] for sz in shape]],
+            axis=0
+        )
+        annuli = np.digitize(r, bins=np.arange(1, num_bins + 1))
+        self._annulus_masks = [annuli == bin_ix for bin_ix in range(num_bins)]
+        
+    def radially_average(self, spectrum):
+        """
+        Turn an n-d array into a 1-d array where each cell is the average of all 
+        input cells at a radial bin. Radius is measured from array center.
+        
+        Arguments:
+        spectrum - array to convert, same shape as given to constructor.
+        """
+        ret = np.empty(len(self._annulus_masks))
+        for bin_ix, annulus in enumerate(self._annulus_masks):
+            vals = spectrum[annulus]
+            ret[bin_ix] = vals.sum() / len(vals)
+        
+        return ret
+
+    def radially_distribute(self, spectrum):
+        """
+        The opposite of `radially_averaged_spectrum()`. Turns an 1-d array into 
+        an n-d array, where each cell i,j,k gets the value in the radial bin 
+        corresponding to the distance of point i,j,k) from the n-d array's center.
+        """
+        ret = np.empty(self._annulus_masks[0].shape)
+        spect_sqrt = np.sqrt(spectrum)
+        for bin_ix, annulus in enumerate(self._annulus_masks):
+            ret[annulus] = spect_sqrt[bin_ix]
+        
+        return ret
 
 
-def radially_distribute(spectrum, shape):
-    """
-    The opposite of `radially_averaged_spectrum()`. Turns an 1-d array into 
-    an n-d array, where each cell i,j,k gets the value in the radial bin 
-    corresponding to the distance of point 9i,j,k) from the n-d array's center.
-    """
-    ret = np.empty(shape)
-    r = np.linalg.norm(
-        np.mgrid[[np.s_[-sz//2 : sz//2] for sz in shape]],
-        axis=0
-    )
-    
-    spect_sqrt = np.sqrt(spectrum)
-    for bin_ix in range(len(spectrum)):
-        ret[(r >= bin_ix) & (r < bin_ix + 1)] = spect_sqrt[bin_ix]
-    
-    return ret
-
-
-def correct_signal(signal, desired_PSD):
+def correct_signal(signal, desired_PSD, converter):
     """
     Given a binary signal, edit its radial power spectral density to match the
     desired PSD, then create a non-binary signal from the original one, using
@@ -110,15 +114,16 @@ def correct_signal(signal, desired_PSD):
     signal - 2-d array representing the time-domain signal.
     desired_PSD - 1-d array, number of cells is ceil(half the diagonal of 
         `signal`)
+    converter - a DimentionalConverter instance with the correct shapes.
     
     Returns:
     2-d array, same shape as `signal`.
     """
     sig_spect = np.fft.fftshift(np.fft.fftn(signal))
-    sig_PSD_ra = radially_average(sig_spect*sig_spect.conj())
+    sig_PSD_ra = converter.radially_average(sig_spect*sig_spect.conj())
     
     ratio = np.sqrt(desired_PSD/sig_PSD_ra)
-    ratio_filt = radially_distribute(ratio, signal.shape)
+    ratio_filt = converter.radially_distribute(ratio)
     
     corrected_spect = sig_spect*ratio_filt
     corrected_sig = np.real(np.fft.ifftn(np.fft.ifftshift(corrected_spect)))
@@ -131,19 +136,20 @@ def correct_signal(signal, desired_PSD):
     return corrected_sig
 
 
-def iterate_signal(signal, desired):
+def iterate_signal(signal, desired, converter):
     """
     Does one iteration of the Mitsa-Parker PIPPSMA algorithm.
     
     Arguments:
     signal - an (n,n) boolean array, the current state.
     desired - the radially-averaged PSD of the *target* signal.
+    converter - a DimentionalConverter instance with the correct shapes.
     
     Returns:
     a new signal based on the input signal with replacements according to 
     BIPPSMA [1].
     """
-    corrected_sig = correct_signal(signal, desired)
+    corrected_sig = correct_signal(signal, desired, converter)
     
     # Do some replacements:
     num_replacements = int(np.sqrt(np.multiply.reduce(signal.shape)))
@@ -165,7 +171,7 @@ def iterate_signal(signal, desired):
     return new_sig, mse
     
 
-def initial_binary_mask(grey_level, side_length, num_dims=2):
+def initial_binary_mask(grey_level, side_length, converter, num_dims=2):
     """
     Prepares an initial binary mask for the ACBNOM, using the BIPPSMA stage. [1]
     Note some magic numbers related to the iteration control. Revisit later.
@@ -184,7 +190,7 @@ def initial_binary_mask(grey_level, side_length, num_dims=2):
     # Generate the radial PSD that is the target function for iteration.
     actual_grey_level = signal.mean()
     desired = desired_PSD_nd(actual_grey_level, side_length, num_dims)
-    desired_radial = radially_average(desired)
+    desired_radial = converter.radially_average(desired)
     
     new_sig = np.zeros_like(signal)
     new_sig_last = signal
@@ -192,7 +198,7 @@ def initial_binary_mask(grey_level, side_length, num_dims=2):
     i = 0
     while i < 100 and not np.isnan(mse):
         print("init mask", i)
-        new_sig, new_mse = iterate_signal(new_sig_last, desired_radial)
+        new_sig, new_mse = iterate_signal(new_sig_last, desired_radial, converter)
         #print(i, new_mse)
         if (new_mse > mse and i > 10):
             break
@@ -203,7 +209,8 @@ def initial_binary_mask(grey_level, side_length, num_dims=2):
     return new_sig, desired_radial
 
 
-def iterate_grey_level(prev_mask, new_g_disc, num_grey_levels=256, upward=True):
+def iterate_grey_level(prev_mask, new_g_disc, converter, 
+    num_grey_levels=256, upward=True):
     """
     Create a new binary mask for level $g + \Delta g$. This is the main part
     of an ACBNOM stage. See [1]
@@ -215,6 +222,7 @@ def iterate_grey_level(prev_mask, new_g_disc, num_grey_levels=256, upward=True):
         scale.
     new_g_disc - the discretized grey level, where 1 -> num_grey_levels - 1, 
         e.g for 8-bit greyscale, 1 -> 255 and 0.5 -> 127.
+    converter - a DimentionalConverter instance with the correct shapes.
     num_grey_levels - number of possible levels, e.g. 256 for 8-bit greyscale.
     upward - direction of construction. Affects the kind of replacements made.
     """
@@ -224,10 +232,10 @@ def iterate_grey_level(prev_mask, new_g_disc, num_grey_levels=256, upward=True):
     # Create desired spectrum.
     desired = desired_PSD_nd(
         new_g_disc*gl_delta, prev_mask.shape[0], prev_mask.ndim)
-    desired_radial = radially_average(desired)
+    desired_radial = converter.radially_average(desired)
     
     # Find error:
-    corrected_sig = correct_signal(prev_mask, desired_radial)
+    corrected_sig = correct_signal(prev_mask, desired_radial, converter)
     error = np.abs(corrected_sig - prev_mask)
     
     # Make corrections:
@@ -286,7 +294,9 @@ def gen_blue_noise(side_length, num_dims=2):
     num_grey_bits = 8
     num_grey_levels = 2**num_grey_bits
     
-    init_mask, desired_radial = initial_binary_mask(grey_level, side_length, num_dims)
+    converter = DimentionalConverter((side_length,)*num_dims)
+    init_mask, desired_radial = initial_binary_mask(
+        grey_level, side_length, converter, num_dims)
     
     # The cumulative array:
     numbered_pixels = np.where(init_mask, (num_grey_levels >> 1) - 1, num_grey_levels >> 1)
@@ -294,13 +304,13 @@ def gen_blue_noise(side_length, num_dims=2):
     next_mask = init_mask.copy()
     for grey_level_disc in range((num_grey_levels >> 1) + 1, num_grey_levels):
         print(grey_level_disc)
-        next_mask = iterate_grey_level(next_mask, grey_level_disc)
+        next_mask = iterate_grey_level(next_mask, grey_level_disc, converter)
         numbered_pixels[next_mask == 0] += 1
     
     next_mask = init_mask.copy()
     for grey_level_disc in range((num_grey_levels >> 1) - 1, 0, -1):
         print(grey_level_disc)
-        next_mask = iterate_grey_level(next_mask, grey_level_disc, upward=False)
+        next_mask = iterate_grey_level(next_mask, grey_level_disc, converter, upward=False)
         numbered_pixels[next_mask != 0] -= 1
    
     return numbered_pixels
@@ -326,7 +336,9 @@ if __name__ == "__main__":
         pl.figure()
         next_FT = np.fft.fftshift(np.fft.fft2(numbered_pixels))
         next_PSD = next_FT*next_FT.conj()
-        pl.plot(radially_average(next_PSD)[1:])
+        
+        converter = DimentionalConverter((args.side_length,)*args.dims)
+        pl.plot(converter.radially_average(next_PSD)[1:])
         
         if args.dims == 2:
             pl.figure()
