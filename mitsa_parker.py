@@ -29,6 +29,9 @@ import numpy as np
 from scipy import ndimage as ndi
 from matplotlib import pyplot as pl
 
+from point_local_avg import DimentionalConverter
+
+
 def desired_PSD_nd(grey_level, side_length, num_dims=2):
     """
     Generates a radially-averaged PSD for a 2D square mask.
@@ -72,60 +75,6 @@ def desired_PSD_nd(grey_level, side_length, num_dims=2):
     flt[(side_length//2,)*num_dims] = DC_power
     return flt
 
-
-class DimentionalConverter:
-    """
-    Converts nD array <---> radially averaged 1D array.
-    """
-    def __init__(self, shape, squeeze_factors=None):
-        """
-        shape - of the nD side of the conversion. A tuple.
-        squeeze_factors - n-length array. Change the calculation of radius
-            to be ellipsoidal, r = sum(coord_i**2/squeeze_factor_i**2)
-        """
-        if squeeze_factors is None:
-            squeeze_factors = np.ones(len(shape))
-        
-        # Make squeeze-factors broadcastable to coords array shape:
-        squeeze_factors_shape = (len(squeeze_factors),) + (1,)*len(shape)
-        squeeze_factors = squeeze_factors.reshape(*squeeze_factors_shape)
-        
-        coords = np.mgrid[[np.s_[-sz//2 : sz//2] for sz in shape]]
-        r = np.linalg.norm(coords / squeeze_factors, axis=0)
-        
-        num_bins = int(np.ceil(np.linalg.norm(shape)/2))
-        annuli = np.digitize(r, bins=np.arange(1, num_bins + 1))
-        self._annulus_masks = [annuli == bin_ix for bin_ix in range(num_bins)]
-        
-    def radially_average(self, spectrum):
-        """
-        Turn an n-d array into a 1-d array where each cell is the average of all 
-        input cells at a radial bin. Radius is measured from array center.
-        
-        Arguments:
-        spectrum - array to convert, same shape as given to constructor.
-        """
-        ret = np.empty(len(self._annulus_masks))
-        for bin_ix, annulus in enumerate(self._annulus_masks):
-            vals = spectrum[annulus]
-            ret[bin_ix] = vals.sum() / len(vals)
-        
-        return ret
-
-    def radially_distribute(self, spectrum):
-        """
-        The opposite of `radially_averaged_spectrum()`. Turns an 1-d array into 
-        an n-d array, where each cell i,j,k gets the value in the radial bin 
-        corresponding to the distance of point i,j,k) from the n-d array's center.
-        """
-        ret = np.empty(self._annulus_masks[0].shape)
-        spect_sqrt = np.sqrt(spectrum)
-        for bin_ix, annulus in enumerate(self._annulus_masks):
-            ret[annulus] = spect_sqrt[bin_ix]
-        
-        return ret
-
-
 def correct_signal(signal, desired_PSD, converter):
     """
     Given a binary signal, edit its radial power spectral density to match the
@@ -142,7 +91,7 @@ def correct_signal(signal, desired_PSD, converter):
     2-d array, same shape as `signal`.
     """
     sig_spect = np.fft.fftshift(np.fft.fftn(signal))
-    sig_PSD_ra = converter.radially_average(sig_spect*sig_spect.conj())
+    sig_PSD_ra = converter.radially_average(np.real(sig_spect*sig_spect.conj()))
     
     ratio = np.sqrt(desired_PSD/sig_PSD_ra)
     ratio_filt = converter.radially_distribute(ratio)
@@ -265,12 +214,8 @@ def iterate_grey_level(prev_mask, new_g_disc, converter,
     
     ## Identify worst zeros. This is different than BIPPSMA, because we 
     ## have to check each replacement's neighbourhood to avoid clusters.
-    if upward:
-        replace_value = 0
-        replace_to = 1
-    else:
-        replace_value = 1
-        replace_to = 0
+    replace_value = 0 if upward else 1
+    replace_to = 1 - replace_value
     
     void = prev_mask == replace_value
     void_error = np.where(void, error, 0)
@@ -371,11 +316,11 @@ if __name__ == "__main__":
     
     # Examine result:
     if args.view:
-        pl.figure()
         next_FT = np.fft.fftshift(np.fft.fft2(numbered_pixels))
-        next_PSD = next_FT*next_FT.conj()
+        next_PSD = np.real(next_FT*next_FT.conj())
         
         converter = DimentionalConverter((args.side_length,)*args.dims)
+        pl.figure()
         pl.plot(converter.radially_average(next_PSD)[1:])
         
         if args.dims == 2:
