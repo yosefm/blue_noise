@@ -52,7 +52,7 @@ def desired_PSD_nd(grey_level, side_length, num_dims=2):
     coords = np.mgrid[filterRanges] # n x shape
     
     # This gives the shape but not the correct strength:
-    cf = np.sqrt(grey_level)
+    cf = np.sqrt(grey_level/2.)
     r = np.linalg.norm(coords, axis=0) # r.shape == `shape`
     peak = cf*r.max()
     flt = np.sin(0.5*np.pi*r/peak)**4
