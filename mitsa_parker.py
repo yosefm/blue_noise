@@ -296,7 +296,7 @@ if __name__ == "__main__":
     parser.add_argument('--side-length', type=int, default=256,
         help="The generated mask will be an n-d cube with this side length.")
     parser.add_argument('--dims', type=int, default=2,
-        help="Dimentions of output mask. Default is 2 (square).")
+        help="Dimensions of output mask. Default is 2 (square).")
     parser.add_argument('--squeeze-factors', 
         help="Coma-separated, one element per dimension. "
         "See docstrings in DigitalConverter class.")
